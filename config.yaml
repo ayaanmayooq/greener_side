@@ -1,0 +1,8 @@
+data_root: "./data"
+symbols:
+  intraday: ["SPY"]
+  swing: ["SPY","QQQ"]
+
+swing_history:
+  start: "2005-01-01"
+  end: null
