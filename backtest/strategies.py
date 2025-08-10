@@ -71,3 +71,24 @@ class TripleBarrierATR(Strategy):
             if c >= tgt or c <= stp:
                 return j
         return end_i
+    
+    
+class BuyAndHold(Strategy):
+    """
+    Enter once near the start and hold to the end.
+    We enter at the NEXT day's open after the first feature row (engine convention).
+    """
+    def __init__(self, cost_bps: float = 0.0):
+        self._cost_bps = cost_bps
+
+    def cost_bps(self) -> float:
+        return self._cost_bps
+
+    def generate_entries(self, fe: pd.DataFrame) -> pd.Series:
+        s = pd.Series(False, index=fe.index)
+        if len(fe) >= 2:
+            s.iloc[0] = True  # signal on first feature row → enter next day's open
+        return s
+
+    def pick_exit_index(self, i_signal: int, fe: pd.DataFrame) -> int:
+        return len(fe) - 1  # exit at the last available bar (open)
