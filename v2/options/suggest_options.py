@@ -122,7 +122,27 @@ def adx_wilder(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 
     dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     return _rma(dx, period)
 
-def simple_long_entries(df, adx_cut: float = 18.0, min_votes: int = 3):
+def simple_long_entries(
+    df,
+    *,
+    mode: str = "roll",        # "flip" | "state" | "pullback" | "roll"
+    adx_cut: float = 18.0,
+    min_votes: int = 3,
+    pullback_lookback: int = 3,
+    roll_every: int = 10
+):
+    """
+    Unified entry generator for your MonthlyTrend-like regime.
+
+    mode:
+      - "flip":     ON only on OFF→ON flip (breakout entry)
+      - "state":    ON every bar while regime is ON (continuous exposure)
+      - "pullback": ON when regime is ON AND we dipped below EMA5 in last N bars
+                    AND we reclaim EMA5 today (buy-the-dip inside trend)
+      - "roll":     ON at flip AND every `roll_every` bars thereafter while ON
+    """
+    df = df.copy()
+    idx = pd.to_datetime(df.index)
     close = df['Close'].astype(float)
     high  = df['High'].astype(float)
     low   = df['Low'].astype(float)
@@ -144,7 +164,45 @@ def simple_long_entries(df, adx_cut: float = 18.0, min_votes: int = 3):
         + (adx > adx_cut).astype(int)
     )
     long_state = (votes >= int(min_votes))
-    entries = long_state & (~long_state.shift(1).fillna(False))
+
+    flip = long_state & (~long_state.shift(1, fill_value=False))
+
+    if mode == "flip":
+        entries = flip
+
+    elif mode == "state":
+        # every bar while ON
+        entries = long_state.astype(bool)
+
+    elif mode == "pullback":
+        # had a dip below EMA5 recently, and today reclaimed above EMA5
+        L = max(1, int(pullback_lookback))
+        dipped  = (close < ema5).rolling(L).max().astype(bool)
+        reclaim = (close > ema5) & (close.shift(1) <= ema5.shift(1))
+        entries = (long_state & dipped & reclaim).astype(bool)
+
+    elif mode == "roll":
+        # fire at flip and then every `roll_every` bars inside the same ON segment
+        # build segment ids (each ON run after a flip)
+        seg_id = flip.cumsum().to_numpy()  # 0 while never flipped; 1,2,3... for each segment
+        seg_pos = np.zeros(len(idx), dtype=int) - 1  # -1 = not in an ON segment yet
+        seen = {}
+        for i, sid in enumerate(seg_id):
+            if sid == 0 or not long_state.iloc[i]:
+                seg_pos[i] = -1
+            else:
+                prev = seen.get(sid, -1)
+                seg_pos[i] = prev + 1
+                seen[sid] = seg_pos[i]
+        seg_pos = pd.Series(seg_pos, index=idx)
+
+        rolls = (long_state) & (seg_pos > 0) & ((seg_pos % int(roll_every)) == 0)
+        entries = (flip | rolls).astype(bool)
+
+    else:
+        raise ValueError("mode must be one of: 'flip', 'state', 'pullback', 'roll'")
+    
+    entries.index = idx
     return entries.astype(bool)
 
 def suggest_call_vertical_for_entry(S, sigma, atr_val, *, 
@@ -213,3 +271,109 @@ def suggest_verticals_from_df(df, N=20, strike_inc=1.0):
         ]).set_index('date')
 
     return pd.DataFrame(out).set_index('date').sort_index()
+
+
+# ========= REAL-TIME ENTRY HELPERS =========
+
+def entry_today(df: pd.DataFrame, adx_cut: float = 18.0, min_votes: int = 3):
+    """
+    True if the *latest* bar is a fresh long entry (state flipped OFF -> ON).
+    Uses your simple_long_entries(df, adx_cut, min_votes).
+    """
+    if not {'Open','High','Low','Close'}.issubset(df.columns):
+        raise ValueError("df must have Open/High/Low/Close")
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+
+    entries = simple_long_entries(df, adx_cut=adx_cut, min_votes=min_votes)
+    if len(entries) < 2:
+        return False, None
+    fired = bool(entries.iloc[-1])
+    when  = df.index[-1] if fired else None
+    return fired, when
+
+
+def recommend_vertical_now(
+    df: pd.DataFrame,
+    *,
+    N=20,
+    exec_timing='next_open',     # 'next_open' (safer) or 'same_close' (faster)
+    strike_inc=1.0,
+    r=0.0, q=0.0,
+    min_width_pct=0.03, max_width_pct=0.05,
+    atr_mult=2.0,
+    target_cost_max=0.40,
+    force=False  # if True, ignore entry_today() and always return a rec
+):
+    """
+    If today's bar fired a new long entry, build a live call-debit-vertical recommendation.
+    - For 'same_close': uses today's Close as price anchor.
+    - For 'next_open': uses today's Close as *planning* anchor; you will execute at next open.
+      (So strikes may be a touch off in reality—good enough for a decision.)
+    Returns a dict or None.
+    """
+    if not {'Open','High','Low','Close'}.issubset(df.columns):
+        raise ValueError("df must have Open/High/Low/Close")
+    df = df.copy()
+    df.index = pd.to_datetime(df.index)
+
+    if not force:
+        fired, signal_ts = entry_today(df)
+        if not fired:
+            return None
+    else:
+        # pretend the latest bar fired
+        signal_ts = df.index[-1]
+
+    close = df['Close']
+    # planning anchor for strikes/debit calc
+    S_anchor = float(close.iloc[-1])
+
+    # realized vol & ATR at the signal bar
+    sigma = float(realized_vol_from_close(close, 20).bfill().iloc[-1] or 0.30)
+    atr_v = float(atr14(df['High'], df['Low'], df['Close']).bfill().iloc[-1] or (S_anchor * 0.02))
+
+    rec = suggest_call_vertical_for_entry(
+        S_anchor, sigma, atr_v,
+        N=N, strike_inc=strike_inc,
+        min_width_pct=min_width_pct, max_width_pct=max_width_pct,
+        atr_mult=atr_mult, target_cost_max=target_cost_max,
+        r=r, q=q
+    )
+
+    # annotate execution intent + anchors
+    rec['signal_date']  = signal_ts
+    rec['exec_timing']  = exec_timing
+    rec['price_anchor'] = {'field': 'Close', 'value': S_anchor}
+    rec['comment']      = (
+        "Exec at same_close uses Close[-1]. "
+        "Exec at next_open will fill near tomorrow's open; strikes were planned off today's close."
+    )
+    return rec
+
+
+def size_spread(rec: dict, equity: float, budget_frac: float = 0.10, multiplier: int = 100):
+    """
+    Convert a recommendation (with 'debit') into contracts and premium.
+    - budget = equity * budget_frac
+    - contracts = floor(budget / (debit * multiplier))
+    Also reports planned risk ~= budget_frac * SL_on_prem (e.g., 0.10 * 0.30 = 3% of equity).
+    """
+    debit = float(rec['debit'])
+    prem_per_spread = debit * float(multiplier)
+    budget = float(equity) * float(budget_frac)
+
+    contracts = int(budget // prem_per_spread) if prem_per_spread > 0 else 0
+    premium_used = contracts * prem_per_spread
+
+    sl_on_prem = float(rec.get('SL_on_prem', 0.50))
+    planned_risk_pct_of_equity = budget_frac * sl_on_prem       # planned loss if SL hits
+    worst_case_loss_pct        = budget_frac                     # max debit-at-risk if no exit
+
+    return {
+        "contracts": contracts,
+        "premium_used": premium_used,
+        "planned_risk_pct_of_equity": planned_risk_pct_of_equity,
+        "worst_case_loss_pct_of_equity": worst_case_loss_pct,
+        "notes": "planned risk assumes you can exit near SL; gaps/liquidity can be worse."
+    }

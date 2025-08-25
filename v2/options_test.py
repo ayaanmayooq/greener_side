@@ -11,14 +11,14 @@ from metrics.directionality import (
     directionality_from_signal, estimate_options_overlay
 )
 from metrics.options_estimate import estimate_options_from_trade_analyzer
-from options.suggest_options import suggest_verticals_from_df
+from options.suggest_options import suggest_verticals_from_df, recommend_vertical_now, size_spread
 from options.simulate_options import simulate_from_recs
 
 
-symbol = "SPY"
-start_date = "2024-01-01"
+symbol = "AAPL"
+start_date = "2015-01-01"
 today = datetime.now().strftime("%Y-%m-%d")
-end_date = "2025-08-20"
+end_date = "2025-08-25"
 
 plot = False
 
@@ -49,15 +49,15 @@ trades, summary = simulate_from_recs(
     min_progress_midtime=0.10,
     ema_guard=True,         # flip on if you like
     # sizing:
-    start_equity=10_000,
-    budget_frac=0.12,
+    start_equity=5_000,
+    budget_frac=0.1,
     compound_on_close=True,
     reserve_premium=True
 )
 
 print("=== Options overlay summary ===")
-for k, v in summary.items():
-    print(f"{k}: {v}")
+# for k, v in summary.items():
+#     print(f"{k}: {v}")
 
 total_pnl = float(trades['pnl_dollars'].sum())
 total_premium = float(trades['premium_used'].sum())
@@ -88,7 +88,7 @@ def quick_grid(df, recs, *, tps=(0.5, 0.6,0.8, 0.85), sls=(0.3,0.5), trails=(0.3
                             be_after_roi=be_a, trail_after_roi=tr_a, trail_frac=tr,
                             min_progress_midtime=0.10,
                             exec_timing='next_open',
-                            start_equity=100_000, budget_frac=budget_frac,
+                            start_equity=5_000, budget_frac=budget_frac,
                             N=20, ema_guard=True,
                             compound_on_close=True,
                             reserve_premium=True

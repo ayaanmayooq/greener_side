@@ -13,12 +13,12 @@ from metrics.directionality import (
 from metrics.options_estimate import estimate_options_from_trade_analyzer
 
 
-symbol = "GOOGL"
+symbol = "TSLA"
 start_date = "2024-01-01"
 today = datetime.now().strftime("%Y-%m-%d")
 end_date = "2025-08-20"
 
-plot = False
+plot = True
 
 strategy = MonthlyTrend
 # strategy = MonthlyTrend
