@@ -1,0 +1,18 @@
+# Core scientific stack
+pandas
+numpy
+matplotlib
+
+# Data sources
+yfinance
+
+# Backtesting and ML
+backtrader
+scikit-learn
+xgboost
+
+# Utilities
+tqdm
+
+# For Python <3.7 (dataclasses is built-in for >=3.7)
+# dataclasses
